@@ -3,6 +3,7 @@ DATASET=${1:-none}
 METHOD=${2:-none}
 ACTION=${3:-run}
 SPLIT=${4:-dev}
+seed=$5
 
 MAX_SEQ_LENGTH=512
 if [ "$DATASET" = "squad" ]; then
@@ -27,8 +28,9 @@ if [ "$ACTION" = "run" ]; then
       --predict_file $DATA_DIR/${SPLIT}_${DATASET}.json \
       --overwrite_output_dir \
       --max_seq_length ${MAX_SEQ_LENGTH} \
-      --output_dir pred_output \
-      --interp_dir interpretations/${METHOD}/${DATASET}_${SPLIT}_${MODEL_TYPE} 2>&1
+      --seed ${seed} \
+      --output_dir pred_output_${seed} \
+      --interp_dir interpretations/${METHOD}/${DATASET}_${SPLIT}_${MODEL_TYPE}_sd${seed} 2>&1
   else
     echo "No such method" $METHOD
   fi

@@ -20,7 +20,6 @@ import logging
 import os
 import random
 import timeit
-from math import ceil
 from functools import partial
 
 import numpy as np
@@ -39,20 +38,31 @@ from transformers import (
     AutoTokenizer,
     get_linear_schedule_with_warmup,
 )
-# from transformers.modeling_roberta import create_position_ids_from_input_ids
 from run_nli import load_and_cache_examples
-from common.config import *
-import torch.nn.functional as F
+from common.config import register_args
 from common.utils import mkdir_f
-# from expl_models.latattr_models import LAtAttrRobertaForSequenceClassification
+from expl_models.tokig_models import TokIGRobertaForSequenceClassification
 from vis_tools.vis_utils import visualize_token_attributions
-# from run_tokig import dump_tokig_info, ig_analyze
-from expl_models.perturb_models import run_lime_attribution, run_shap_attribution
+
 logger = logging.getLogger(__name__)
 
 MODEL_CONFIG_CLASSES = list(MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
+
+def set_seed(args):
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if args.n_gpu > 0:
+        torch.cuda.manual_seed_all(args.seed)
+
+def remove_padding(batch, feature):    
+    new_batch = tuple(x[:,:len(feature.input_ids)] for x in batch[:3]) + (batch[3],)
+    return new_batch
+
+def to_list(tensor):
+    return tensor.detach().cpu().tolist()
 
 def ig_analyze(args, tokenizer):
     filenames = os.listdir(args.interp_dir)
@@ -65,6 +75,7 @@ def ig_analyze(args, tokenizer):
         visualize_token_attributions(args, tokenizer, interp_info)
 
 def dump_tokig_info(args, examples, predictions, attributions):
+    
     # attentions, attributions
     # N_Layer * B * N_HEAD * L * L
     attributions = attributions.detach().cpu().requires_grad_(False)
@@ -72,171 +83,36 @@ def dump_tokig_info(args, examples, predictions, attributions):
     predictions = predictions.detach().cpu().requires_grad_(False)
 
     for example, prediction, attribution in zip(
-            examples,
-            predictions,
-            torch.unbind(attributions)
+        examples,
+        predictions,
+        torch.unbind(attributions)
     ):
         actual_len = len(example.input_ids)
         attribution = attribution[:actual_len].clone()
         filename = os.path.join(args.interp_dir, f'{example.idx}-{example.pair_id}.bin')
         torch.save({'example': example, 'probs': prediction, 'prediction': MNLI_LABELS[torch.argmax(prediction).item()],
-                    'attribution': attribution}, filename)
+            'attribution': attribution}, filename)
 
-
-def probs_of_pred(final_logits, pred_indexes):
-    final_logits = F.softmax(final_logits, dim=1)
-    selected_logits = torch.gather(final_logits, 1, pred_indexes.view(-1, 1)).squeeze(1)
-    return selected_logits
-
-def probe_forward(
-    model,
-    input_ids=None,
-    pred_indexes=None,
-    final_logits=None,  # for comparison
-    active_layers=None,
-    link_mask=None,
-    return_kl=True,
-    **kwargs
-):
-    if active_layers is None:
-        input_attentions = None
-    else:
-        zero_input_attention = torch.zeros(
-            [input_ids.size(0), model.config.num_attention_heads, input_ids.size(1), input_ids.size(1)],
-            device=input_ids.device)
-        input_attentions = [None if active_layers[i] else zero_input_attention for i in range(model.config.num_hidden_layers)]
-        # in_link_masks = []
-        # identity_matrix = torch.eye(input_ids.size(1), dtype=torch.bool, device=input_ids.device)
-        # identity_matrix = identity_matrix.expand(1, self.config.num_attention_heads, -1, -1)
-        # for i in range(self.num_hidden_layers):
-        #     if link_mask is not None and link_mask[i] is not None:
-        #         in_link_masks.append(link_mask[i])
-        #     else:
-        #         in_link_masks.append(None if active_layers[i] else identity_matrix)
-
-    # batch_logits = model.forward(input_ids=input_ids, input_attentions=input_attentions, link_mask=link_mask, **kwargs)[
-    #     0]
-    # [ych]: update for automodel
-    input_pack = {
-        "input_ids": input_ids,
-        "attention_mask": kwargs["attention_mask"]
-    }
-    if "token_type_ids" in kwargs:
-        input_pack["token_type_ids"] = kwargs['token_type_ids']
-    batch_logits = model.forward(**input_pack)[0]
-
-    batch_probs = probs_of_pred(batch_logits, pred_indexes)
-    if not return_kl:
-        return batch_probs
-
-    kl_loss = F.kl_div(
-        F.log_softmax(batch_logits, dim=1),
-        F.softmax(final_logits, dim=1),
-        reduction='batchmean',
-    )
-    return batch_probs.item(), kl_loss.item()
-
-
-# [ych]: USELESS, do not need to care about probe_forward
-# def predict_with_mask(active_mask, tokenizer,  model, base_inputs, full_input_ids):
-#     input_ids = tokenizer.mask_token_id * torch.ones_like(full_input_ids)
-#     input_ids[0, active_mask == 1]  = full_input_ids[0, active_mask == 1]
-#     prob = model.probe_forward(**base_inputs, input_ids=input_ids).item()
-#     return prob
-
-def batch_predict_with_mask(list_mask, tokenizer,  model, base_inputs, batch_size, full_input_ids):
-    # inputs = {
-    #     "input_ids": batch[0],
-    #     "attention_mask": batch[1],
-    #     "token_type_ids": batch[2],        
-    #     "pred_indexes": batch_pred_indexes,
-    #     "final_logits": batch_logits,
-    # }
-    
-    num_instances = len(list_mask)
-    num_batch = int(ceil(num_instances / batch_size))
-    batched_inputs = {
-        'attention_mask': base_inputs['attention_mask'].expand(batch_size, -1),
-        'pred_indexes': base_inputs['pred_indexes'].expand(batch_size),
-        'final_logits': base_inputs['final_logits'].expand(batch_size, -1),
-        # 'position_ids': base_inputs['position_ids'].expand(batch_size, -1),
-        'return_kl': False,
-    }
-    if 'token_type_ids' in base_inputs:
-        batched_inputs['token_type_ids'] = base_inputs['token_type_ids'].expand(batch_size, -1)
-    
-    all_scores = []
-    for batch_idx in range(num_batch):
-        batch_start = batch_idx * batch_size
-        batch_end = (batch_idx + 1) * batch_size
-        
-        # last batch
-        last_batch = batch_end > num_instances
-        if last_batch:
-            batch_end = num_instances
-            last_size = num_instances - batch_start
-            batched_inputs = {
-                'attention_mask': base_inputs['attention_mask'].expand(last_size, -1),
-                'pred_indexes': base_inputs['pred_indexes'].expand(last_size),
-                'final_logits': base_inputs['final_logits'].expand(last_size, -1),
-                # 'position_ids': base_inputs['position_ids'].expand(last_size, -1),
-                'return_kl': False,
-            }
-            if 'token_type_ids' in base_inputs:
-                batched_inputs['token_type_ids'] = base_inputs['token_type_ids'].expand(last_size, -1)
-
-        batched_input_ids = []
-        for i in range(batch_start, batch_end):
-            active_mask = list_mask[i]
-            input_ids = tokenizer.mask_token_id * torch.ones_like(full_input_ids)
-            input_ids[0, active_mask == 1]  = full_input_ids[0, active_mask == 1]
-            batched_input_ids.append(input_ids)
-        batched_input_ids = torch.cat(batched_input_ids)
-        prob = probe_forward(**batched_inputs, input_ids=batched_input_ids, model=model)
-        # print(prob.shape)
-        all_scores.append(prob)
-    all_scores = torch.cat(all_scores).cpu().numpy()
-    return all_scores
-
-def fit_locality(args, tokenizer, model, inputs, feature):    
-    inputs['return_kl'] = False
-
-    full_input_ids = inputs.pop('input_ids')
-    doc_size = full_input_ids.size(1)
-    # full_positioin_ids = create_position_ids_from_input_ids(full_input_ids, tokenizer.pad_token_id).to(full_input_ids.device)
-
-    # fix position id
-    # inputs['position_ids'] = full_positioin_ids
-    # fix cls ? maybe    
-    # score_fn = partial(predict_with_mask, tokenizer=tokenizer, model=model, base_inputs=inputs, full_input_ids=full_input_ids)
-    score_fn = partial(batch_predict_with_mask, tokenizer=tokenizer, model=model, base_inputs=inputs, full_input_ids=full_input_ids, batch_size=args.eval_perturb_size)
-    if args.variant == 'lime':
-        np_attribution = run_lime_attribution(args, doc_size, score_fn).reshape((1,-1))
-    elif args.variant == 'shap':
-        np_attribution = run_shap_attribution(args, doc_size, score_fn).reshape((1,-1))
-    else:
-        raise RuntimeError('Variant must be shap or lime')
-    return torch.from_numpy(np_attribution)
-
-def predict_and_fit_locality(args, batch, model, tokenizer, batch_examples):
+def predict_and_tokig_attribute(args, batch, model, tokenizer, batch_examples):
     model.eval()
     batch = tuple(t.to(args.device) for t in batch)
-    assert batch[0].size(0) == 1    
     # run predictions
     with torch.no_grad():
         inputs = {
             "input_ids": batch[0],
             "attention_mask": batch[1],
             "token_type_ids": batch[2],
+            "output_attentions": True,
         }
 
         if args.model_type in ["roberta", "distilbert", "camembert", "bart"]:
             del inputs["token_type_ids"]
         outputs = model.forward(**inputs)
 
-    batch_logits = outputs[0]
+    batch_logits, batch_attentions = outputs
     # run attributions
     batch_pred_indexes = torch.argmax(batch_logits, dim=1)
+    batch_attentions = torch.stack(batch_attentions)
     
     inputs = {
         "input_ids": batch[0],
@@ -247,11 +123,24 @@ def predict_and_fit_locality(args, batch, model, tokenizer, batch_examples):
     }
     if args.model_type in ["roberta", "distilbert", "camembert", "bart"]:
         del inputs["token_type_ids"]
-    
-    batch_attributions = fit_locality(args, tokenizer, model, inputs, batch_examples[0]) 
-    return batch_logits, batch_attributions
 
-def perturb_interp(args, model, tokenizer, prefix=""):
+    # for data parallel 
+    inputs = {
+        "input_ids": batch[0],
+        "attention_mask": batch[1],
+        "token_type_ids": batch[2],        
+        "pred_indexes": batch_pred_indexes,
+        "final_logits": batch_logits,
+        "num_steps": args.ig_steps,
+        "do_attribute": True,
+    }
+    if args.model_type in ["roberta", "distilbert", "camembert", "bart"]:
+        del inputs["token_type_ids"]
+    
+    batch_attributions = model.forward(**inputs)    
+    return batch_logits, batch_attentions, batch_attributions
+
+def tokig_interp(args, model, tokenizer, prefix=""):
     if not os.path.exists(args.interp_dir):
         os.makedirs(args.interp_dir)
     model.requires_grad_(False)
@@ -263,9 +152,11 @@ def perturb_interp(args, model, tokenizer, prefix=""):
     if not os.path.exists(args.output_dir) and args.local_rank in [-1, 0]:
         os.makedirs(args.output_dir)
 
+    args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
+
     # Note that DistributedSampler samples randomly
     eval_sampler = SequentialSampler(dataset)
-    eval_dataloader = DataLoader(dataset, sampler=eval_sampler, batch_size=1, collate_fn=naive_collate_fn)
+    eval_dataloader = DataLoader(dataset, sampler=eval_sampler, batch_size=args.eval_batch_size, collate_fn=naive_collate_fn)
 
     # multi-gpu evaluate
     if args.n_gpu > 1 and not isinstance(model, torch.nn.DataParallel):
@@ -279,7 +170,7 @@ def perturb_interp(args, model, tokenizer, prefix=""):
     for batch_examples in tqdm(eval_dataloader, desc="Evaluating", disable=args.disable_tqdm):
         model.eval()
         batch = specific_collate_fn(batch_examples)
-        batch_predictions, batch_attributions = predict_and_fit_locality(
+        batch_predictions, batch_attentions, batch_attributions = predict_and_tokig_attribute(
             args,
             batch,
             model,
@@ -288,7 +179,6 @@ def perturb_interp(args, model, tokenizer, prefix=""):
         )
         dump_tokig_info(args, batch_examples, batch_predictions, batch_attributions)
         all_predictions.append(batch_predictions)
-        
     all_predictions = torch.cat(all_predictions)
     evalTime = timeit.default_timer() - start_time
     results = evaluate_and_save_mnli(args, examples[:len(all_predictions)], all_predictions, args.output_dir)
@@ -297,9 +187,8 @@ def perturb_interp(args, model, tokenizer, prefix=""):
 def main():
     parser = argparse.ArgumentParser()
     register_args(parser)
-    
-    parser.add_argument("--eval_perturb_size", default=20, type=int, help="Batch size per GPU/CPU for evaluation.")
-    parser.add_argument("--variant",default=None,type=str,help='shap or lime')
+
+    parser.add_argument("--ig_steps", type=int, default=300, help="steps for running integrated gradient")
     parser.add_argument("--do_vis", action="store_true", help="Whether to run vis on the dev set.")
     parser.add_argument("--interp_dir",default=None,type=str,required=True,help="The output directory where the model checkpoints and predictions will be written.")
     parser.add_argument("--visual_dir",default=None,type=str,help="The output visualization dir.")
@@ -375,12 +264,11 @@ def main():
         ig_analyze(args, tokenizer)
     else:
         checkpoint = args.model_name_or_path
-        # model = LAtAttrRobertaForSequenceClassification.from_pretrained(checkpoint)  # , force_download=True)
-        model = AutoModelForSequenceClassification.from_pretrained(checkpoint)  # , force_download=True)
+        model = TokIGRobertaForSequenceClassification.from_pretrained(checkpoint)  # , force_download=True)
         model.to(args.device)
 
         # Evaluate
-        result = perturb_interp(args, model, tokenizer, prefix="")
+        result = tokig_interp(args, model, tokenizer, prefix="")
         logger.info("Results: {}".format(result))
 
 if __name__ == "__main__":

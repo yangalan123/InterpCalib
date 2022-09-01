@@ -3,6 +3,7 @@ DATASET=${1:-none}
 METHOD=${2:-none}
 ACTION=${3:-run}
 SPLIT=${4:-dev}
+seed=$5
 
 if [ "$DATASET" = "mnli" ]; then
     MAX_SEQ_LENGTH=128
@@ -22,12 +23,16 @@ if [ "$ACTION" = "run" ]; then
       --model_type roberta \
       --model_name_or_path checkpoints/${DATASET}_roberta-base \
       --dataset ${DATASET} \
-      --predict_file ${DATA_DIR}/${SPLIT}_${DATASET}.jsonl \
+      --seed ${seed} \
       --overwrite_output_dir \
       --max_seq_length ${MAX_SEQ_LENGTH} \
-      --output_dir pred_output \
       --per_gpu_eval_batch_size ${BATCH_SIZE} \
-      --interp_dir interpretations/${METHOD}/${DATASET}_${SPLIT}_${MODEL_TYPE} 2>&1
+      --output_dir pred_output_${seed} \
+      --predict_file ${DATA_DIR}/${SPLIT}_${DATASET}.jsonl \
+      --interp_dir interpretations/${METHOD}/${DATASET}_${SPLIT}_${MODEL_TYPE}_sd${seed} 2>&1
+#      --predict_file ${DATA_DIR}/${SPLIT}_${DATASET}.jsonl \
+#      --output_dir pred_output \
+#      --interp_dir interpretations/${METHOD}/${DATASET}_${SPLIT}_${MODEL_TYPE} 2>&1
   else
     echo "No such method" $METHOD
   fi
@@ -41,11 +46,12 @@ elif [ "$ACTION" = "vis" ]; then
       --tokenizer_name ${MODEL_TYPE} \
       --model_name_or_path ${MODEL_TYPE} \
       --dataset ${DATASET} \
-      --do_vis \
-      --output_dir pred_output \
+      --output_dir pred_output_${seed} \
       --predict_file ${DATA_DIR}${SPLIT}_${DATASET}.jsonl \
-      --interp_dir interpretations/${METHOD}/${DATASET}_${SPLIT}_${MODEL_TYPE} \
-      --visual_dir visualizations/${METHOD}/${DATASET}_${SPLIT}_${MODEL_TYPE} 2>&1
+      --interp_dir interpretations/${METHOD}/${DATASET}_${SPLIT}_${MODEL_TYPE}_sd${seed} 2>&1
+#      --interp_dir interpretations/${METHOD}/${DATASET}_${SPLIT}_${MODEL_TYPE} \
+#      --visual_dir visualizations/${METHOD}/${DATASET}_${SPLIT}_${MODEL_TYPE} 2>&1
+#      --do_vis \
   else
     echo "No such method"
   fi 

@@ -6,6 +6,7 @@ from common.utils import read_json, dump_json, load_bin, dump_to_bin
 from collections import OrderedDict
 from types import SimpleNamespace
 from transformers import AutoTokenizer
+from dataset_utils import MNLI_LABEL_MAPPING
 import torch
 from calib_exp.calib_utils import load_cached_dataset
 import argparse
@@ -25,20 +26,38 @@ def _parse_args():
     parser.add_argument('--include_neg', default=False, action='store_true')
     parser.add_argument('--no_puct', dest='include_punct', default=True, action='store_false')
     parser.add_argument('--split', type=str, default=None)
+    parser.add_argument('--seed', type=int, default=5)
+    parser.add_argument('--tokenizer', type=str, default="roberta-base")
+    parser.add_argument('--interpretation_dir', type=str, default="interpretations")
     args = parser.parse_args()
     if args.split is None:
         args.split = 'subhans-dev' if args.dataset == 'mnli' else 'dev'
     return args
+
+def get_context_start_and_hypo(args, words):
+    if args.tokenizer == "roberta-base":
+        context_start = words.index('</s>')
+        # hypothesis = words[context_start + 2:-1]
+        next_segment_start = context_start + 2
+    else:
+        if "bert" in args.tokenizer:
+            context_start = words.index('[SEP]')
+            # hypothesis = words[context_start + 1:-1]
+            next_segment_start = context_start + 1
+        else:
+            raise ValueError(f"Unrecognized tokenizer: {args.tokenizer}")
+    return context_start, next_segment_start
 
 def load_interp_info(file_dict, qas_id):
     return torch.load(file_dict[qas_id])
 
 def build_file_dict(args):
     # prefix = 'squad_sample-addsent_roberta-base'
-    prefix = '{}_{}_roberta-base'.format(args.dataset, args.split)
-    fnames = os.listdir(join('interpretations', args.method, prefix))
+    # prefix = '{}_{}_roberta-base'.format(args.dataset, args.split)
+    prefix = '{}_{}_roberta-base_sd{}'.format(args.dataset, args.split, args.seed)
+    fnames = os.listdir(join(args.interpretation_dir, args.method, prefix))
     ids = [ args.split + x.split('-',1)[0] for x in fnames]
-    fullnames = [join('interpretations', args.method, prefix, x) for x in fnames]
+    fullnames = [join(args.interpretation_dir, args.method, prefix, x) for x in fnames]
     return dict(zip(ids, fullnames))
 
 def merge_attention_by_segments(attention, segments):
@@ -154,7 +173,8 @@ def normalize_token_attr(args, feat, attributions, norm_method=None):
     raise RuntimeError(norm_method)
 
 def extract_token_attr_feature_in_question(args, words, tags, attributions):
-    context_start = words.index('</s>')
+    # context_start = words.index('</s>')
+    context_start, next_seg_start = get_context_start_and_hypo(args, words)
     tags = tags[1:context_start]
     attributions = attributions[1:context_start]
 
@@ -175,9 +195,12 @@ def extract_token_attr_feature_in_question(args, words, tags, attributions):
     return feat
 
 def extract_token_attr_feature_in_context(args, words, tags, attributions):
-    context_start = words.index('</s>')
-    tags = tags[context_start + 2: -1]
-    attributions = attributions[context_start + 2: -1]
+    # context_start = words.index('</s>')
+    context_start, next_seg_start = get_context_start_and_hypo(args, words)
+    # tags = tags[context_start + 2: -1]
+    tags = tags[next_seg_start: -1]
+    # attributions = attributions[context_start + 2: -1]
+    attributions = attributions[next_seg_start: -1]
 
     feat = IndexedFeature()
     unnorm = IndexedFeature()
@@ -197,7 +220,7 @@ def extract_token_attr_feature_in_context(args, words, tags, attributions):
 
 def extract_token_attr_feature_in_input(args, words, tags, attributions):
     feat = IndexedFeature()
-    context_start = words.index('</s>')
+    # context_start = words.index('</s>')
     for i, (token, pos, tag) in enumerate(tags):
         v = attributions[i]
         if pos == 'PUNCT' and not args.include_punct:
@@ -208,20 +231,22 @@ def extract_token_attr_feature_in_input(args, words, tags, attributions):
 
 def extract_token_attr_stats_in_input(args, words, tags, attributions, part):
     feat = IndexedFeature()
-    context_start = words.index('</s>')
+    # context_start = words.index('</s>')
+    context_start, next_seg_start = get_context_start_and_hypo(args, words)
     if part == 'Q':
         tags = tags[1:context_start]
         attributions = attributions[1:context_start]
     if part == 'C':
-        tags = tags[context_start + 2: -1]
-        attributions = attributions[context_start + 2: -1]
+        # tags = tags[context_start + 2: -1]
+        tags = tags[next_seg_start: -1]
+        attributions = attributions[next_seg_start: -1]
 
     feat.add('STAT_MEAN_' + part, attributions.mean())
     feat.add('STAT_STD_' + part, attributions.std())
     return feat
 
 def source_of_token(idx, tok, pos, tag, context_start):
-    if tok in ['<s>', '</s>']:
+    if tok in ['<s>', '</s>', "[SEP]"]:
         return 'S'
     if idx >= 1 and idx < context_start:
         return 'P'
@@ -232,7 +257,7 @@ def ranked_pair(a, b):
 
 def extract_link_attr_feature(args, words, tags, attributions):
     feat = IndexedFeature()
-    context_start = words.index('</s>')
+    context_start, next_seg_start = get_context_start_and_hypo(args, words)
     for i, (i_token, i_pos, i_tag) in enumerate(tags):
         i_src = source_of_token(i, i_token, i_pos, i_tag, context_start)
         for j, (j_token, j_pos, j_tag) in enumerate(tags):
@@ -250,7 +275,7 @@ def extract_link_attr_feature(args, words, tags, attributions):
 
 def extract_bow_feature(args, words, tags):
     feat = IndexedFeature()
-    context_start = words.index('</s>')
+    context_start, next_seg_start = get_context_start_and_hypo(args, words)
     for i, (i_token, i_pos, i_tag) in enumerate(tags):
         i_src = source_of_token(i, i_token, i_pos, i_tag, context_start)
         if i_src == 'H' or i_src == 'P':
@@ -278,10 +303,10 @@ def lematize_pos_tag(x):
         tag = 'PUNCT'
     return tok, pos, tag
 
-def augment_pos_tag_with_common(words, tags_for_tok):
-    context_start = words.index('</s>')
+def augment_pos_tag_with_common(words, tags_for_tok, args):
+    context_start, next_seg_start = get_context_start_and_hypo(args, words)
     premise = words[1:context_start]
-    hypothesis = words[context_start + 2:-1]
+    hypothesis = words[next_seg_start: -1]
     # premise = [lemmatizer.lemmatize(x.lower()) for x in premise]
     # hypothesis = [lemmatizer.lemmatize(x.lower()) for x in hypothesis]
     common_toks = set(premise) & set(hypothesis)
@@ -307,8 +332,9 @@ def orig_eval_of_squad(prediction, ex):
 def get_split_specific_calib_label(preds, feature):
     if feature.genre == 'hans':
         entailment_prob = preds['entailment']
-        pred_label = 1 if entailment_prob > 0.5 else 0
-        calib_label = 1 if pred_label == feature.label else 0   
+        # pred_label = 1 if entailment_prob > 0.5 else 0
+        pred_label = MNLI_LABEL_MAPPING["entailment"] if entailment_prob > 0.5 else MNLI_LABEL_MAPPING["neutral"]
+        calib_label = 1 if pred_label == feature.label else 0
     else:
         pred_cat = sorted([(k, preds[k]) for k in preds], key=lambda x: x[1], reverse=True)[0][0]
         calib_label = 1 if pred_cat == feature.gold else 0
@@ -325,7 +351,7 @@ def extract_feature_for_instance(args, interp, tags, preds):
     calib_label = get_split_specific_calib_label(preds, feature)
     words, tags_for_tok = tags['words'], tags['tags']
     tags_for_tok = [lematize_pos_tag(x) for x in tags_for_tok]
-    tags_for_tok = augment_pos_tag_with_common(words, tags_for_tok)
+    tags_for_tok = augment_pos_tag_with_common(words, tags_for_tok, args)
     named_feat.add_set(extract_bow_feature(args, words, tags_for_tok))
     named_feat.add_set(extract_polarity_feature(args, interp, tags, words, tags_for_tok, 'POS', include_stats=False))
     named_feat.add_set(extract_polarity_feature(args, interp, tags, words, tags_for_tok, 'NEG', include_stats=False))
@@ -370,8 +396,8 @@ def label_sanity_check(data):
 
 def main():
     args = _parse_args()
-    tokenizer = AutoTokenizer.from_pretrained('roberta-base',do_lower_case=False,cache_dir='hf_cache')
-    tagger_info = load_bin('misc/{}_{}_tag_info.bin'.format(args.dataset, args.split))
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, do_lower_case=False, cache_dir='hf_cache')
+    tagger_info = load_bin('misc/{}/{}_{}_tag_info.bin'.format(args.tokenizer.split("/")[-1], args.dataset, args.split))
     interp_dict = build_file_dict(args)
     preds_info = read_json('misc/{}_{}_predictions.json'.format(args.dataset, args.split))
     
@@ -383,7 +409,9 @@ def main():
             continue
         interp = load_interp_info(interp_dict, id)
         proced_instances[id] = extract_feature_for_instance(args, interp, tags, preds)
-    dump_to_bin(proced_instances, 'calib_exp/data/{}_{}_{}_calib_data.bin'.format(args.dataset, args.split, args.method))
+    # dump_to_bin(proced_instances, 'calib_exp/data/{}_{}_{}_calib_data.bin'.format(args.dataset, args.split, args.method))
+    os.makedirs("calib_exp/data/{}".format(args.tokenizer.split("/")[-1]), exist_ok=True)
+    dump_to_bin(proced_instances, 'calib_exp/data/{}/{}_{}_{}_sd{}_calib_data.bin'.format(args.tokenizer.split("/")[-1], args.dataset, args.split, args.method, args.seed))
     label_sanity_check(proced_instances)
 
 

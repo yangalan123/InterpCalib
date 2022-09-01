@@ -19,6 +19,7 @@ def _parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, default='mnli')
     parser.add_argument('--split', type=str, default=None)
+    parser.add_argument('--tokenizer', type=str, default="roberta-base")
     args = parser.parse_args()
     if args.split is None:
         args.split = 'subhans-dev' if args.dataset == 'mnli' else 'dev'
@@ -26,9 +27,18 @@ def _parse_args():
 
 def _merge_roberta_tokens_into_words(tokenizer, feature):
     tokens = tokenizer.convert_ids_to_tokens(feature.input_ids)
-    decoded_each_tok = [
-        bytearray([tokenizer.byte_decoder[c] for c in t]).decode("utf-8", errors=tokenizer.errors) for t in tokens
-    ]
+    assert len(tokens) == len(feature.input_ids)
+    # decoded_each_tok = [
+    #     bytearray([tokenizer.byte_decoder[c] for c in t]).decode("utf-8", errors=tokenizer.errors) for t in tokens
+    # ]
+    tokenizer_name = tokenizer.name_or_path
+    if "roberta" in tokenizer_name.lower():
+        decoded_each_tok = [tokenizer.convert_tokens_to_string([x, ]) for x in tokens]
+    else:
+        if "bert" in tokenizer_name.lower():
+            decoded_each_tok = tokens
+        else:
+            raise ValueError(f"Have not implemented accommodation for tokenizer {tokenizer_name}")
 
 
     end_points = []
@@ -89,24 +99,39 @@ def assign_pos_tags(hf_tokens, nlp):
     words = [words[i] for i in valid_idx]
     spaces = [spaces[i] for i in valid_idx]
     doc = Doc(nlp.vocab, words=words, spaces=spaces)
-    proced_tokens = nlp.tagger(doc)
+    # proced_tokens = nlp.tagger(doc)
+    proced_tokens = nlp(doc)
 
     tag_info = [('','NULL', 'NULL')] * len(hf_tokens)
     for i, proc_tok in zip(valid_idx, proced_tokens):
         tag_info[i] = (proc_tok.text, proc_tok.pos_, proc_tok.tag_)
     return tag_info
 
-def process_instance(tokenizer, nlp, feat):
+def process_instance(tokenizer, nlp, feat, args):
     print(feat.id)
-    words, segments = _merge_roberta_tokens_into_words(tokenizer, feat)    
-    question_end = words.index(tokenizer.sep_token)
+    words, segments = _merge_roberta_tokens_into_words(tokenizer, feat)
+    if args.tokenizer == "roberta-base":
+        question_end = words.index(tokenizer.sep_token)
 
-    context_start = words.index(tokenizer.eos_token)
+        context_start = words.index(tokenizer.eos_token)
+        conatext_tokens = words[context_start + 2: -1]
+    else:
+        if "bert" in tokenizer.name_or_path:
+            context_start = words.index(tokenizer.sep_token)
+            conatext_tokens = words[context_start + 1: -1]
+        else:
+            raise ValueError(f"Have not implemented accommodation for tokenizer {tokenizer.name_or_path}")
     question_tokens = words[1:context_start]
-    conatext_tokens = words[context_start + 2: -1]
     question_tag_info = assign_pos_tags(question_tokens, nlp)
     context_tag_info = assign_pos_tags(conatext_tokens, nlp)
-    tag_info = [('<s>', 'SOS', 'SOS')] + question_tag_info + [('<\s>', 'EOS', 'EOS'), ('<\s>', 'EOS', 'EOS')] + context_tag_info +  [('<\s>', 'EOS', 'EOS')]
+    if args.tokenizer == "roberta-base":
+        tag_info = [('<s>', 'SOS', 'SOS')] + question_tag_info + [('<\s>', 'EOS', 'EOS'), ('<\s>', 'EOS', 'EOS')] + context_tag_info +  [('<\s>', 'EOS', 'EOS')]
+    else:
+        if "bert" in tokenizer.name_or_path:
+            tag_info = [(tokenizer.cls_token, 'SOS', 'SOS')] + question_tag_info + [(tokenizer.sep_token, 'EOS', 'EOS'),] + context_tag_info + [
+                           (tokenizer.sep_token, 'EOS', 'EOS')]
+        else:
+            raise ValueError(f"Have not implemented accommodation for tokenizer {tokenizer.name_or_path}")
     assert len(tag_info) == len(words)
     # print(tag_info)
     instance_info = {'words': words, 'segments': segments, 'tags': tag_info}
@@ -114,8 +139,8 @@ def process_instance(tokenizer, nlp, feat):
 
 def main():
     args = _parse_args()
-    tokenizer = AutoTokenizer.from_pretrained('roberta-base',do_lower_case=False,cache_dir='hf_cache')
-    features = load_cached_dataset(args.dataset, args.split)
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, do_lower_case=False, cache_dir='hf_cache')
+    features = load_cached_dataset(args.dataset, args.split, args.tokenizer)
     nlp = spacy.load("en_core_web_sm") 
     
     proced_instances = OrderedDict()
@@ -123,8 +148,9 @@ def main():
         if feat.id in proced_instances:
             print(feat.id)
             raise RuntimeError('Duplicate pairid')
-        proced_instances[feat.id] = process_instance(tokenizer, nlp, feat)
-    dump_to_bin(proced_instances, 'misc/{}_{}_tag_info.bin'.format(args.dataset, args.split))
+        proced_instances[feat.id] = process_instance(tokenizer, nlp, feat, args)
+    os.makedirs('misc/{}'.format(args.tokenizer.split("/")[-1]), exist_ok=True)
+    dump_to_bin(proced_instances, 'misc/{}/{}_{}_tag_info.bin'.format(args.tokenizer.split("/")[-1], args.dataset, args.split))
 
 def demo_spacy():
     nlp = spacy.load("en_core_web_sm") 
