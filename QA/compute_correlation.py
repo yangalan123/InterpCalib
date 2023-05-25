@@ -4,7 +4,6 @@ import torch
 import glob
 import os
 path="/home/ec2-user/InterpCalib/QA/interpretations/shap/squad_addsent-dev_roberta-base_sd{}"
-#path="/home/ec2-user/InterpCalib/QA/interpretations/full_2exp11_setting/shap/squad_addsent-dev_roberta-base_sd{}"
 seed1_path = path.format(1)
 seed2_path = path.format(2)
 filenames = glob.glob(os.path.join(seed1_path, "*.bin"))
