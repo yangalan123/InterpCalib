@@ -84,8 +84,7 @@ def run_lime_attribution(args, doc_size, classifier_fn):
 # hyper-paremeter inherited from oringinal shap implementation
 def shap_feat_label_weights(doc_size, classifier_fn, verbose=False):
     # not working for small seq for now, needs more complex way
-    #num_sample = 2 * doc_size + 2 ** 5
-    num_sample = 25
+    num_sample = 2 * doc_size + 2 ** 11
     if num_sample > (2 ** doc_size - 2):
         num_sample = (2 ** doc_size - 2)
 

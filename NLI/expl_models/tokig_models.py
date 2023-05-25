@@ -1,5 +1,5 @@
 from transformers import RobertaForSequenceClassification
-from transformers.modeling_roberta import (
+from transformers import (
     RobertaClassificationHead,
     RobertaPreTrainedModel,
     RobertaModel,

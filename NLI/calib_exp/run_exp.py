@@ -21,12 +21,14 @@ def _parse_args():
     parser.add_argument('--dataset', type=str, default='mnli')
     parser.add_argument('--method', type=str, default='lime')
     parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--data_seed', type=int, default=5)
     parser.add_argument('--do_baseline', default=False, action='store_true')
     parser.add_argument('--do_maxprob', default=False, action='store_true')
     parser.add_argument('--do_bow', default=False, action='store_true')
     parser.add_argument('--do_unnorm', default=False, action='store_true')
     parser.add_argument('--do_tok', default=False, action='store_true')
-    parser.add_argument('--rm_baseline', default=False, action='store_true')    
+    parser.add_argument('--rm_baseline', default=False, action='store_true')
+    parser.add_argument('--tokenizer', type=str, default="roberta-base")
     parser.add_argument('--n_run', type=int, default=20)
     parser.add_argument('--train_size', type=int, default=500)
     parser.add_argument('--model', type=str, default='rf')
@@ -310,7 +312,9 @@ def main():
     random.seed(args.seed)
     np.random.seed(args.seed)
 
-    data = load_bin('calib_exp/data/{}_{}_{}_calib_data.bin'.format(args.dataset, args.split, args.method))
+    # data = load_bin('calib_exp/data/{}_{}_{}_calib_data.bin'.format(args.dataset, args.split, args.method))
+    data = load_bin('calib_exp/data/{}/{}_{}_{}_sd{}_calib_data.bin'.format(args.tokenizer.split("/")[-1],
+                                                                            args.dataset, args.split, args.method, args.data_seed))
     baseids = [data[x]['baseid'] for x in data]
     data = proc_input_data(args, data)
     X, Y, vocab = make_np_dataset(data)

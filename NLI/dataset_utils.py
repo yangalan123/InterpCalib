@@ -3,13 +3,21 @@ from torch.utils.data import Dataset
 import torch
 
 
+# MNLI_LABEL_MAPPING = {
+#     'neutral': 0,
+#     'entailment': 1,
+#     'contradiction': 2,
+# }
+# huggingface def of MNLI label mapping
 MNLI_LABEL_MAPPING = {
-    'neutral': 0,
-    'entailment': 1,
+    'neutral': 1,
+    'entailment': 0,
     'contradiction': 2,
 }
 
-MNLI_LABELS = ['neutral', 'entailment', 'contradiction']
+# MNLI_LABELS = ['neutral', 'entailment', 'contradiction']
+# huggingface def of MNLI label mapping
+MNLI_LABELS = ['entailment', 'neutral', 'contradiction']
 
 class NLIFeature:
     def __init__(self, premise, hypothesis, gold, genre, pair_id, id, idx, input_ids, token_type_ids, label):

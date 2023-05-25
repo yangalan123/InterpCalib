@@ -22,6 +22,7 @@ def _parse_args():
     parser.add_argument('--input_norm', type=str, default='all',
         choices=['none', 'all', 'counted'])
     parser.add_argument('--method', type=str, default='lime')
+    parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--include_neg', default=False, action='store_true')
     parser.add_argument('--no_punct', dest='include_punct', default=True, action='store_false')
     parser.add_argument('--split', type=str, default=None)
@@ -29,7 +30,7 @@ def _parse_args():
     if args.split == None:
         args.split = 'addsent-dev' if args.dataset == 'squad' else 'dev'
     return args
-    
+
 
 def normalize_answer(s):
     """Lower text and remove punctuation, articles and extra whitespace."""
@@ -78,7 +79,7 @@ def load_interp_info(file_dict, qas_id):
 
 def build_file_dict(args):
     # prefix = 'squad_sample-addsent_roberta-base'
-    prefix = '{}_{}_roberta-base'.format(args.dataset, args.split)
+    prefix = '{}_{}_roberta-base_sd{}'.format(args.dataset, args.split, args.seed)
     fnames = os.listdir(join('interpretations', args.method, prefix))
     qa_ids = [x.split('-',1)[1].split('.')[0] for x in fnames]
     fullnames = [join('interpretations', args.method, prefix, x) for x in fnames]
@@ -96,7 +97,7 @@ def merge_attention_by_segments(attention, segments):
     return attention
 
 def aggregate_link_attribution(args, interp, tags):
-    
+
     attribution_val = interp['attribution'].numpy()
     # attribution_val[attribution_val < 0 ]  = 0
     aggregated_attribution = np.sum(attribution_val, axis=0)
@@ -123,7 +124,7 @@ def merge_attribution_by_segments(attention, segments):
     return attention
 
 def aggregate_token_attribution(args, interp, tags, polarity):
-    attribution_val = interp['attribution'].numpy().copy()    
+    attribution_val = interp['attribution'].numpy().copy()
     if polarity == 'POS':
         attribution_val[attribution_val < 0] = 0
     elif polarity == 'NEG':
@@ -132,7 +133,7 @@ def aggregate_token_attribution(args, interp, tags, polarity):
         pass
     else:
         raise RuntimeError('Invalid polarity')
-        
+
     attribution_val = merge_attribution_by_segments(attribution_val, tags['segments'])
     assert attribution_val.shape[0] == len(tags['segments'])
     attribution_val = attribution_val / np.sum(attribution_val)
@@ -154,7 +155,7 @@ def normalize_token_attr(args, feat, attributions, norm_method=None):
             feat.data[k] = feat.data[k] / sum_v if sum_v != 0 else 0
         return feat
     raise RuntimeError(norm_method)
-        
+
 def extract_token_attr_feature_in_question(args, words, tags, attributions):
     context_start = words.index('</s>')
     tags = tags[1:context_start]
@@ -170,7 +171,7 @@ def extract_token_attr_feature_in_question(args, words, tags, attributions):
         feat.add('NORMED_TOK_Q_' + tag, v)
         unnorm.add('UNNORM_TOK_Q_' + tag, v)
         sum_v += v
-    
+
     feat = normalize_token_attr(args, feat, attributions)
     feat.add_set(unnorm)
     feat.add('SUM_TOK_Q', sum_v)
@@ -207,11 +208,11 @@ def extract_token_attr_feature_in_input(args, words, tags, attributions, ans_ran
         if pos == 'PUNCT' and not args.include_punct:
             continue
         feat.add('TOK_IN_' + tag, v)
-        
+
         if i >= ans_range[0] and i <= ans_range[1]:
             unnormed_a_feat.add('UNNORM_TOK_A_' + tag, v)
             normed_a_feat.add('NORMED_TOK_A_' + tag, v)
-    
+
     feat.add_set(normalize_token_attr(args, normed_a_feat, [], 'counted'))
     feat.add_set(unnormed_a_feat)
     return feat
@@ -223,7 +224,7 @@ def source_of_token(idx, tok, pos, tag, context_start, ans_range):
         return 'Q'
     if idx >= ans_range[0] and idx <= ans_range[1]:
         # print(tok)
-        return 'A'        
+        return 'A'
     return 'C'
 
 def ranked_pair(a, b):
@@ -326,7 +327,7 @@ def extract_feature_for_instance(args, interp, tags, preds):
     # gt_text = answer_text if ex.answer_text else ex.answers[0]['text']
     exact_match, f1 = orig_eval_of_squad(pred_text, ex)
     calib_label = 1 if exact_match > 0 else 0
-    
+
     named_feat = IndexedFeature()
     named_feat.add_set(extract_baseline_feature(args, interp, preds))
 
@@ -339,7 +340,7 @@ def extract_feature_for_instance(args, interp, tags, preds):
     while segments[transformed_end_idx][1] < (prelim_result['end_index'] + 1):
         transformed_end_idx += 1
     ans_range = (transformed_start_idx, transformed_end_idx)
-    # syntactic feature    
+    # syntactic feature
     words, tags_for_tok = tags['words'], tags['tags']
     tags_for_tok = [lematize_pos_tag(x) for x in tags_for_tok]
     named_feat.add_set(extract_bow_feature(args, words, tags_for_tok, ans_range))
@@ -386,7 +387,7 @@ def main():
     tagger_info = load_bin('misc/{}_{}_tag_info.bin'.format(args.dataset, args.split))
     interp_dict = build_file_dict(args)
     preds_info = read_json('misc/{}_{}_predictions.json'.format(args.split, args.dataset))
-    
+
     proced_instances = OrderedDict()
     for qas_id in tqdm(tagger_info, total=len(tagger_info),desc='transforming'):
         tags = tagger_info[qas_id]
@@ -395,10 +396,10 @@ def main():
             continue
         interp = load_interp_info(interp_dict, qas_id)
         proced_instances[qas_id] = extract_feature_for_instance(args, interp, tags, preds)
-    dump_to_bin(proced_instances, 'calib_exp/data/{}_{}_{}_calib_data.bin'.format(args.dataset, args.split, args.method))
+    dump_to_bin(proced_instances, 'calib_exp/data/{}_{}_{}_sd{}_calib_data.bin'.format(args.dataset, args.split, args.method, args.seed))
     # label_sanity_check(proced_instances)
 
 
 if __name__ == "__main__":
     main()
-    
+

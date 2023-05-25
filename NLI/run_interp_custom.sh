@@ -14,22 +14,24 @@ fi
 
 BATCH_SIZE=10
 
-MODEL_TYPE="roberta-base"
+#MODEL_TYPE="roberta-base"
+MODEL_TYPE="bert-base-uncased"
 if [ "$ACTION" = "run" ]; then
   if [ "$METHOD" = "lime" -o "$METHOD" = "shap" ]; then
     echo "Run probing method"
     python -u run_perturb.py \
       --variant ${METHOD} \
-      --model_type roberta \
-      --model_name_or_path checkpoints/${DATASET}_roberta-base \
+      --model_type bert \
+      --model_name_or_path chromeNLP/textattack_bert_base_MNLI_fixed \
+      --cache_dir ./cached_model \
       --dataset ${DATASET} \
       --seed ${seed} \
       --overwrite_output_dir \
       --max_seq_length ${MAX_SEQ_LENGTH} \
       --per_gpu_eval_batch_size ${BATCH_SIZE} \
-      --output_dir pred_output_${seed} \
+      --output_dir pred_output_custom_${seed} \
       --predict_file ${DATA_DIR}/${SPLIT}_${DATASET}.jsonl \
-      --interp_dir interpretations/${METHOD}/${DATASET}_${SPLIT}_${MODEL_TYPE}_sd${seed} 2>&1
+      --interp_dir interpretations_custom/${METHOD}/${DATASET}_${SPLIT}_${MODEL_TYPE}_sd${seed} 2>&1
 #      --predict_file ${DATA_DIR}/${SPLIT}_${DATASET}.jsonl \
 #      --output_dir pred_output \
 #      --interp_dir interpretations/${METHOD}/${DATASET}_${SPLIT}_${MODEL_TYPE} 2>&1
@@ -54,7 +56,7 @@ elif [ "$ACTION" = "vis" ]; then
 #      --do_vis \
   else
     echo "No such method"
-  fi 
+  fi
 else
   echo "run or vis"
 fi

@@ -23,6 +23,7 @@ def _parse_args():
     parser.add_argument('--dataset', type=str, required=True)
     parser.add_argument('--method', type=str, default='lime')
     parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--data_seed', type=int, default=1)
     parser.add_argument('--do_baseline', default=False, action='store_true')
     parser.add_argument('--do_maxprob', default=False, action='store_true')
     parser.add_argument('--do_bow', default=False, action='store_true')
@@ -92,7 +93,7 @@ def make_np_dataset(indexed_data):
     y = np.array([v['label'] for v in indexed_data.values()])
     f1 = np.array([v['f1_score'] for v in indexed_data.values()])
     x = np.array([feat_to_list(v['feature'], vocab) for v in indexed_data.values()])
-    
+
     for index, name in vocab.id_to_feat.items():
         if 'LENGTH' in name:
             x[:, index] = x[:, index] / np.max(x[:, index])
@@ -132,7 +133,7 @@ def interp_calibrator_model(cls, vocab):
     else:
         print('UnInterpretable model')
         return
-    
+
     imp_idx = np.argsort(-np.abs(feat_imp))
     for i in imp_idx[:100]:
         print(vocab.get_word(i), feat_imp[i])
@@ -233,7 +234,7 @@ def get_feature_importances(cls, x, y):
     if isinstance(cls, LogisticRegression):
         feat_imp = cls.coef_.flatten()
     elif isinstance(cls, RandomForestClassifier):
-        feat_imp = cls.feature_importances_    
+        feat_imp = cls.feature_importances_
     elif isinstance(cls, GradientBoostingClassifier):
         feat_imp = cls.feature_importances_
     else:
@@ -242,32 +243,32 @@ def get_feature_importances(cls, x, y):
 
 def selection_based_rf(train_x, train_y, dev_x, n_feat=20):
     clf = RandomForestClassifier(n_estimators=100).fit(train_x, train_y)
-    feat_imp = clf.feature_importances_    
+    feat_imp = clf.feature_importances_
     imp_idx = np.argsort(-np.abs(feat_imp))
     train_x = train_x[:,imp_idx[:n_feat],]
     dev_x = dev_x[:, imp_idx[:n_feat]]
     return RandomForestClassifier(n_estimators=100).fit(train_x, train_y), train_x, dev_x
 
 
-def one_pass_exp(args, X, Y, F1, vocab, train_test_split):    
+def one_pass_exp(args, X, Y, F1, vocab, train_test_split):
 
     train_x, train_y, dev_x, dev_y, train_F1, dev_F1 = apply_train_test_split(X, Y, F1, train_test_split, force_dev_size=args.force_dev_size)
 
     majority_acc = max(np.sum(dev_y == 0), np.sum(dev_y == 1)) / dev_y.size
-    
+
     if args.do_maxprob:
         train_acc, best_threshould = train_max_accuracy(train_x, train_y)
         dev_acc, _= test_max_accuracy(dev_x, dev_y, best_threshould)
         dev_auc = f1auc_score(dev_x, dev_F1)
         return majority_acc, train_acc, dev_acc, dev_auc, f1_prob_curve(dev_F1, dev_x.flatten()), None
-    
+
     if args.model == 'lr':
         clf = LogisticRegression(C=1000.0, max_iter=100, solver='saga').fit(train_x, train_y)
     elif args.model == 'rf':
         # clf = KNeighborsClassifier(n_neighbors=10).fit(train_x, train_y)
         # clf = RandomForestClassifier(n_estimators=200, max_depth=5).fit(train_x, train_y)
         clf = RandomForestClassifier(n_estimators=args.arg_n_tree, max_depth=args.arg_max_depth).fit(train_x, train_y)
-        # clf = RandomForest    Regressor(n_estimators=100, max_depth=3).fit(train_x, train_F1)        
+        # clf = RandomForest    Regressor(n_estimators=100, max_depth=3).fit(train_x, train_F1)
         # clf, train_x, dev_x = selection_based_rf(train_x, train_y, dev_x)
     elif args.model == 'svm':
         clf = SVC(C=10.0).fit(train_x, train_y)
@@ -294,7 +295,7 @@ def one_pass_exp(args, X, Y, F1, vocab, train_test_split):
 
 def gen_predefined_train_test_splits(baseids, n_run, train_size):
     num_data = len(baseids)
-    
+
     baseid_indexer = OrderedDict()
     for i, b in enumerate(baseids):
         if b in baseid_indexer:
@@ -303,11 +304,11 @@ def gen_predefined_train_test_splits(baseids, n_run, train_size):
             baseid_indexer[b] = [i]
     num_base = len(baseid_indexer)
     print('Number of Exs', num_data, 'Number of Unique Base', num_base)
-    
+
     predefined_permutations = [np.random.permutation(num_base) for _ in range(n_run)]
     baseid_groups = list(baseid_indexer.values())
     num_train = train_size
-    
+
     splits = []
     for perm in predefined_permutations:
         flat_idx = list(chain(*[baseid_groups[i] for i in perm]))
@@ -356,7 +357,7 @@ def main():
     print(args)
     np.random.seed(args.seed)
 
-    data = load_bin('calib_exp/data/{}_{}_{}_calib_data.bin'.format(args.dataset, args.split, args.method))
+    data = load_bin('calib_exp/data/{}_{}_{}_sd{}_calib_data.bin'.format(args.dataset, args.split, args.method, args.data_seed))
     data = proc_input_data(args, data)
 
     X, Y, F1, vocab = make_np_dataset(data)
@@ -370,7 +371,7 @@ def main():
     agg_results = []
     for train_test_split in tqdm(predefined_splits, total=len(predefined_splits), desc='Runing Random Exp'):
         agg_results.append(one_pass_exp(args, X, Y, F1, vocab, train_test_split))
-    
+
     agg_base_acc = np.array([x[0] for x in agg_results])
     agg_train_acc = np.array([x[1] for x in agg_results])
     agg_dev_acc = np.array([x[2] for x in agg_results])
@@ -381,7 +382,7 @@ def main():
     print('AVG TRAIN ACC {:.3f}'.format(agg_train_acc.mean()))
     print('AVG DEV ACC: {:.3f} +/- {:.3f}, AUC: {:.3f}, MAX: {:.3f}, MIN: {:.3f}'.format(agg_dev_acc.mean(), agg_dev_acc.std(), agg_auc.mean(), agg_dev_acc.max(), agg_dev_acc.min()))
     # print(agg_f1_curve)
-    
+
     # print numbers for copy paste
     exp_numbers = [agg_base_acc.mean(), agg_dev_acc.mean(), agg_auc.mean()] + agg_f1_curve.tolist()
     print(','.join(['{:.3f}'.format(x) for x in exp_numbers]))
@@ -396,7 +397,7 @@ def main():
         for rank, i in enumerate(imp_idx[:100]):
             # print('Feat Rank:', rank, vocab.get_word(i), agg_feat_imp[i])
             print(rank, vocab.get_word(i), agg_feat_imp[i])
-        
-        
+
+
 if __name__ == "__main__":
     main()
